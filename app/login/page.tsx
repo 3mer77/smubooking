@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { loginWithEmail } from "@/lib/auth"
 import { showAuthSuccessToast, showAuthErrorToast } from "@/lib/utils"
+import { getUserById, UserRole } from "@/lib/firebase"
 
 export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false)
@@ -37,13 +38,22 @@ export default function LoginPage() {
       }
 
       // Authenticate with Firebase
-      await loginWithEmail(email, password)
+      const userCredential = await loginWithEmail(email, password)
+      
+      // Get user data from Firestore to check role
+      const userData = await getUserById(userCredential.uid)
       
       // Show success toast
       showAuthSuccessToast('Login successful!')
       
-      // Redirect to dashboard
-      router.push('/dashboard')
+      // Redirect based on user role
+      if (userData && userData.role === UserRole.ADMIN) {
+        // Admin users go to admin dashboard
+        router.push('/admin')
+      } else {
+        // Regular users go to standard dashboard
+        router.push('/dashboard')
+      }
     } catch (err: any) {
       console.error('Login error:', err)
       setError(err.message)

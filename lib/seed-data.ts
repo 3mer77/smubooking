@@ -1,4 +1,5 @@
 import { Timestamp } from 'firebase/firestore';
+import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { 
   createUser, 
   createRoom, 
@@ -6,11 +7,15 @@ import {
   createBooking, 
   createNotificationSettings,
   UserRole,
-  BookingStatus
+  BookingStatus,
+  auth
 } from './firebase';
 
 // Seed data function to populate the database with initial test data
 export const seedDatabase = async () => {
+  // Default password for all test users
+  const defaultPassword = 'password123';
+  
   // Create sample users
   const sampleUsers = [
     {
@@ -218,10 +223,30 @@ export const seedDatabase = async () => {
   };
 
   try {
-    // Create users
-    const userPromises = sampleUsers.map(user => createUser(user, user.uid));
-    const users = await Promise.all(userPromises);
-    const userIds = users.map(user => user.uid);
+    // Create authentication entries and Firestore user documents
+    const userIds = [];
+    
+    for (const user of sampleUsers) {
+      try {
+        // Create authentication entry
+        await createUserWithEmailAndPassword(auth, user.email, defaultPassword)
+          .catch(error => {
+            // If user already exists, ignore the error
+            if (error.code === 'auth/email-already-in-use') {
+              console.log(`User ${user.email} already exists in authentication.`);
+            } else {
+              throw error;
+            }
+          });
+        
+        // Create Firestore user document
+        await createUser(user, user.uid);
+        userIds.push(user.uid);
+      } catch (error) {
+        console.error(`Error creating user ${user.email}:`, error);
+      }
+    }
+    
     console.log('Created sample users');
 
     // Create rooms
