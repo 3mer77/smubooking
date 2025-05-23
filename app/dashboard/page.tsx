@@ -26,9 +26,10 @@ import { Textarea } from "@/components/ui/textarea"
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet" // Assuming you use shadcn/ui Sheet
 
 // Import Firebase config and Firestore functions
-import { db, auth } from "@/lib/firebase"; // Adjust the path to your firebase.js file
-import { collection, getDocs, doc, getDoc, updateDoc, addDoc, serverTimestamp, query, where, orderBy, onSnapshot } from "firebase/firestore";
+import { db, auth, bookingsCollection, BookingStatus, BookingType } from "@/lib/firebase"; // Adjust the path to your firebase.js file
+import { collection, getDocs, doc, getDoc, updateDoc, addDoc, query, where, orderBy, onSnapshot, Timestamp } from "firebase/firestore";
 import { onAuthStateChanged } from "firebase/auth";
+import { showAuthSuccessToast, showAuthErrorToast } from "@/lib/utils";
 
 // Room colors (can remain or be fetched if dynamic)
 const roomColors = {
@@ -459,51 +460,118 @@ export default function DashboardPage() {
     setIsSubmitting(true);
     
     try {
-      // Get the booking data based on the booking type
-      const bookingData = {
-        date: bookingDate,
-        startTime: bookingStartTime,
-        endTime: bookingEndTime,
-        reason: bookingReason,
-        userId: auth.currentUser?.uid,
-        userEmail: auth.currentUser?.email,
-        createdAt: serverTimestamp(),
-        status: "pending" // Could be 'pending', 'approved', 'rejected'
-      };
+      // Debug user authentication state
+      console.log("Current user state:", auth.currentUser);
       
-      if (bookingType === "room" && selectedRoom) {
-        await addDoc(collection(db, "bookings"), {
-          ...bookingData,
-          itemType: "room",
-          itemId: selectedRoom.id,
-          roomName: selectedRoom.name,
-          building: selectedRoom.building,
-          floor: selectedRoom.floor,
-          roomNumber: selectedRoom.roomNumber
-        });
-        
-        // Update room status if you want to show it as booked immediately
-        // await updateDoc(doc(db, "rooms", selectedRoom.id), { status: "booked" });
-      } else if (bookingType === "equipment" && selectedEquipment) {
-        await addDoc(collection(db, "bookings"), {
-          ...bookingData,
-          itemType: "equipment",
-          itemId: selectedEquipment.id,
-          equipmentName: selectedEquipment.name,
-          equipmentType: selectedEquipment.type,
-          location: selectedEquipment.location
-        });
-        
-        // Update equipment status if you want to show it as booked immediately
-        // await updateDoc(doc(db, "equipment", selectedEquipment.id), { status: "booked" });
+      if (!auth.currentUser?.uid) {
+        showAuthErrorToast("You must be logged in to make a booking");
+        setIsSubmitting(false);
+        return;
       }
       
-      // Close dialog and reset form
-      handleCloseBookingDialog();
-      alert("Booking request submitted successfully. It will be reviewed by an administrator.");
-    } catch (error) {
+      // Debug form values
+      console.log("Booking form values:", {
+        bookingDate,
+        bookingStartTime,
+        bookingEndTime,
+        bookingReason,
+        bookingType,
+        selectedRoom,
+        selectedEquipment
+      });
+      
+      // Convert date and time strings to a Timestamp
+      const startDateTime = new Date(`${bookingDate}T${bookingStartTime}`);
+      const endDateTime = new Date(`${bookingDate}T${bookingEndTime}`);
+      
+      console.log("Parsed date times:", { startDateTime, endDateTime });
+      
+      // Validate date and time inputs
+      const now = new Date();
+      if (startDateTime < now) {
+        showAuthErrorToast("Start time must be in the future");
+        setIsSubmitting(false);
+        return;
+      }
+      
+      if (endDateTime <= startDateTime) {
+        showAuthErrorToast("End time must be after start time");
+        setIsSubmitting(false);
+        return;
+      }
+      
+      // Create timestamp objects
+      const startTimestamp = Timestamp.fromDate(startDateTime);
+      const endTimestamp = Timestamp.fromDate(endDateTime);
+      const currentTimestamp = Timestamp.now();
+      
+      // Create the booking data matching the BookingType structure
+      if (bookingType === "room" && selectedRoom) {
+        const bookingData = {
+          userId: auth.currentUser.uid,
+          resourceType: "room" as const,
+          resourceId: selectedRoom.id,
+          startTime: startTimestamp,
+          endTime: endTimestamp,
+          status: BookingStatus.PENDING,
+          reason: bookingReason,
+          createdAt: currentTimestamp,
+          updatedAt: currentTimestamp
+        };
+        
+        console.log("Adding room booking with data:", bookingData);
+        
+        // Add the booking to the bookings collection
+        const docRef = await addDoc(bookingsCollection, bookingData);
+        console.log("Successfully created booking with ID:", docRef.id);
+        
+        // Close dialog and reset form
+        handleCloseBookingDialog();
+        showAuthSuccessToast("Booking request submitted successfully. It will be reviewed by an administrator.");
+      } else if (bookingType === "equipment" && selectedEquipment) {
+        const bookingData = {
+          userId: auth.currentUser.uid,
+          resourceType: "equipment" as const,
+          resourceId: selectedEquipment.id,
+          startTime: startTimestamp,
+          endTime: endTimestamp,
+          status: BookingStatus.PENDING,
+          reason: bookingReason,
+          createdAt: currentTimestamp,
+          updatedAt: currentTimestamp
+        };
+        
+        console.log("Adding equipment booking with data:", bookingData);
+        
+        // Add the booking to the bookings collection
+        const docRef = await addDoc(bookingsCollection, bookingData);
+        console.log("Successfully created booking with ID:", docRef.id);
+        
+        // Close dialog and reset form
+        handleCloseBookingDialog();
+        showAuthSuccessToast("Booking request submitted successfully. It will be reviewed by an administrator.");
+      } else {
+        // This should never happen if the UI is working correctly
+        console.error("Invalid booking type or missing selected item", { bookingType, selectedRoom, selectedEquipment });
+        showAuthErrorToast("Invalid booking details. Please try again.");
+        setIsSubmitting(false);
+        return;
+      }
+    } catch (error: any) {
+      // Enhanced error logging
       console.error("Error creating booking:", error);
-      alert("There was an error creating your booking. Please try again.");
+      
+      // Get detailed error information
+      const errorMessage = error.message || "Unknown error";
+      const errorCode = error.code || "";
+      console.error("Error details:", { errorMessage, errorCode, error });
+      
+      // Show more specific error message to user
+      if (errorCode.includes("permission-denied")) {
+        showAuthErrorToast("You don't have permission to make bookings. Please contact an administrator.");
+      } else {
+        showAuthErrorToast(`Error: ${errorMessage}. Please try again or contact support.`);
+      }
     } finally {
       setIsSubmitting(false);
     }
