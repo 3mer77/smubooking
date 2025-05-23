@@ -2,6 +2,7 @@ import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 import { toast } from "sonner"
 import { UserRole } from "./firebase"
+import { format } from "date-fns"
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
@@ -77,4 +78,10 @@ export const isValidUniversityId = (id: string, role: UserRole): boolean => {
   }
   
   return false
+}
+
+// Format date for display
+export const formatDate = (date: Date | null | undefined): string => {
+  if (!date) return 'N/A'
+  return format(date, 'MMM dd, yyyy HH:mm')
 }
