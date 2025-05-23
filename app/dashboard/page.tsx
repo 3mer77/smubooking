@@ -26,10 +26,22 @@ import { Textarea } from "@/components/ui/textarea"
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet" // Assuming you use shadcn/ui Sheet
 
 // Import Firebase config and Firestore functions
-import { db, auth, bookingsCollection, BookingStatus, BookingType } from "@/lib/firebase"; // Adjust the path to your firebase.js file
-import { collection, getDocs, doc, getDoc, updateDoc, addDoc, query, where, orderBy, onSnapshot, Timestamp } from "firebase/firestore";
-import { onAuthStateChanged } from "firebase/auth";
+import { db, auth, BookingStatus } from "@/lib/firebase";
+import { collection, getDocs, doc, getDoc, updateDoc, addDoc, query, where, orderBy, onSnapshot, Timestamp, getFirestore } from "firebase/firestore";
+import { getAuth, onAuthStateChanged } from "firebase/auth";
+import { initializeApp } from "firebase/app";
 import { showAuthSuccessToast, showAuthErrorToast } from "@/lib/utils";
+
+// Firebase configuration - using the actual config from your project
+const firebaseConfig = {
+  apiKey: "AIzaSyCQBg5075SsOn-xZ4D8O7KelfvZ2_YXz_k",
+  authDomain: "smuproject12-645b4.firebaseapp.com",
+  projectId: "smuproject12-645b4",
+  storageBucket: "smuproject12-645b4.firebasestorage.app",
+  messagingSenderId: "977472397040",
+  appId: "1:977472397040:web:f77e9b91feb20172bc2c35",
+  measurementId: "G-WT7RC50GV2"
+};
 
 // Room colors (can remain or be fetched if dynamic)
 const roomColors = {
@@ -146,6 +158,9 @@ export default function DashboardPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showMobileFilters, setShowMobileFilters] = useState(false); // Renamed from showFilters for clarity
   const [availableOnly, setAvailableOnly] = useState(false);
+  // State for success dialog
+  const [successDialogOpen, setSuccessDialogOpen] = useState(false);
+  const [successMessage, setSuccessMessage] = useState("");
   const [visibleRooms, setVisibleRooms] = useState(20);
   const [visibleEquipment, setVisibleEquipment] = useState(20);
   const [buildings, setBuildings] = useState<string[]>([]); // For filter dropdown: unique building names
@@ -454,124 +469,165 @@ export default function DashboardPage() {
   const loadMoreRooms = () => setVisibleRooms(prev => prev + 20);
   const loadMoreEquipment = () => setVisibleEquipment(prev => prev + 20);
   
-  // Actual booking submission handler
+  // Initialize Firebase directly to ensure it's properly connected
+  console.log("Firebase config being used:", firebaseConfig);
+  const fbApp = initializeApp(firebaseConfig, 'booking-app-instance');
+  const fbFirestore = getFirestore(fbApp);
+  const fbAuth = getAuth(fbApp);
+  
+  // Use a dedicated function for database saves to isolate issues
+  const saveToFirestore = async (data: any, collectionName: string) => {
+    console.log(`Attempting to save to ${collectionName} collection...`);
+    try {
+      // Method 1: Using addDoc directly
+      const collectionRef = collection(fbFirestore, collectionName);
+      console.log(`Collection reference created for ${collectionName}:`, collectionRef);
+      
+      const docRef = await addDoc(collectionRef, data);
+      console.log(`SUCCESS! Document created in ${collectionName} with ID:`, docRef.id);
+      return { success: true, docRef };
+    } catch (error: any) {
+      console.error(`ERROR saving to ${collectionName}:`, error);
+      console.error("Error code:", error.code);
+      console.error("Error message:", error.message);
+      
+      // Try another direct approach with the imported collection function
+      try {
+        console.log(`Trying another approach for ${collectionName}...`);
+        // Use the direct import of collection function instead
+        const altCollectionRef = collection(db, collectionName);
+        const altDocRef = await addDoc(altCollectionRef, data);
+        console.log(`SUCCESS with alternative approach! Document created with ID:`, altDocRef.id);
+        return { success: true, docRef: altDocRef };
+      } catch (altError: any) {
+        console.error(`Alternative approach also failed for ${collectionName}:`, altError);
+        return { success: false, error: altError };
+      }
+    }
+  };
+  
+  // Improved booking submission handler with extensive logging
   const handleSubmitBooking = async (e: React.FormEvent) => {
     e.preventDefault();
+    console.log("📣 BOOKING SUBMISSION STARTED");
     setIsSubmitting(true);
     
     try {
-      // Debug user authentication state
-      console.log("Current user state:", auth.currentUser);
+      // Check authentication - try both auth sources
+      console.log("Checking authentication status...");
+      console.log("Direct auth.currentUser:", auth.currentUser);
+      console.log("Local fbAuth.currentUser:", fbAuth.currentUser);
       
-      if (!auth.currentUser?.uid) {
+      const currentUser = auth.currentUser || fbAuth.currentUser;
+      
+      if (!currentUser) {
+        console.error("ERROR: No authenticated user found");
         showAuthErrorToast("You must be logged in to make a booking");
         setIsSubmitting(false);
         return;
       }
       
+      console.log("✅ Authentication verified - User ID:", currentUser.uid);
+      
+      // Validate form values
+      if (!bookingDate || !bookingStartTime || !bookingEndTime || !bookingReason) {
+        console.error("ERROR: Missing required form values");
+        showAuthErrorToast("Please fill in all required booking details");
+        setIsSubmitting(false);
+        return;
+      }
+      
+      console.log("✅ Form validation passed");
+      
       // Debug form values
-      console.log("Booking form values:", {
+      console.log("📝 Booking form values:", {
         bookingDate,
         bookingStartTime,
         bookingEndTime,
         bookingReason,
         bookingType,
-        selectedRoom,
-        selectedEquipment
+        selectedRoom: selectedRoom ? { id: selectedRoom.id, name: selectedRoom.name } : null,
+        selectedEquipment: selectedEquipment ? { id: selectedEquipment.id, name: selectedEquipment.name } : null
       });
       
-      // Convert date and time strings to a Timestamp
+      // Convert date and time strings to a Date object
       const startDateTime = new Date(`${bookingDate}T${bookingStartTime}`);
       const endDateTime = new Date(`${bookingDate}T${bookingEndTime}`);
-      
-      console.log("Parsed date times:", { startDateTime, endDateTime });
+      console.log("Start time parsed as:", startDateTime.toISOString());
+      console.log("End time parsed as:", endDateTime.toISOString());
       
       // Validate date and time inputs
       const now = new Date();
       if (startDateTime < now) {
+        console.error("ERROR: Start time is in the past");
         showAuthErrorToast("Start time must be in the future");
         setIsSubmitting(false);
         return;
       }
       
       if (endDateTime <= startDateTime) {
+        console.error("ERROR: End time must be after start time");
         showAuthErrorToast("End time must be after start time");
         setIsSubmitting(false);
         return;
       }
+      
+      console.log("✅ Date/time validation passed");
       
       // Create timestamp objects
       const startTimestamp = Timestamp.fromDate(startDateTime);
       const endTimestamp = Timestamp.fromDate(endDateTime);
       const currentTimestamp = Timestamp.now();
       
-      // Create the booking data matching the BookingType structure
-      if (bookingType === "room" && selectedRoom) {
-        const bookingData = {
-          userId: auth.currentUser.uid,
-          resourceType: "room" as const,
-          resourceId: selectedRoom.id,
-          startTime: startTimestamp,
-          endTime: endTimestamp,
-          status: BookingStatus.PENDING,
-          reason: bookingReason,
-          createdAt: currentTimestamp,
-          updatedAt: currentTimestamp
-        };
-        
-        console.log("Adding room booking with data:", bookingData);
-        
-        // Add the booking to the bookings collection
-        const docRef = await addDoc(bookingsCollection, bookingData);
-        console.log("Successfully created booking with ID:", docRef.id);
-        
-        // Close dialog and reset form
+      // Create a booking data object with only primitive values
+      const bookingData = {
+        userId: currentUser.uid,
+        userEmail: currentUser.email || 'unknown',
+        resourceType: bookingType,
+        resourceId: bookingType === 'room' ? selectedRoom?.id : selectedEquipment?.id,
+        resourceName: bookingType === 'room' ? (selectedRoom?.name || 'Unknown Room') : (selectedEquipment?.name || 'Unknown Equipment'),
+        startTime: startTimestamp,
+        endTime: endTimestamp,
+        status: 'pending',
+        reason: bookingReason,
+        createdAt: currentTimestamp,
+        updatedAt: currentTimestamp
+      };
+      
+      console.log("📊 Final booking data being sent to Firestore:", JSON.stringify(bookingData, null, 2));
+      
+      // First try saving to our dedicated function
+      console.log("Attempting to save booking data...");
+      const result = await saveToFirestore(bookingData, 'bookings');
+      
+      if (result.success && result.docRef) {
+        console.log("✅ BOOKING SAVED SUCCESSFULLY!");
         handleCloseBookingDialog();
-        showAuthSuccessToast("Booking request submitted successfully. It will be reviewed by an administrator.");
-      } else if (bookingType === "equipment" && selectedEquipment) {
-        const bookingData = {
-          userId: auth.currentUser.uid,
-          resourceType: "equipment" as const,
-          resourceId: selectedEquipment.id,
-          startTime: startTimestamp,
-          endTime: endTimestamp,
-          status: BookingStatus.PENDING,
-          reason: bookingReason,
-          createdAt: currentTimestamp,
-          updatedAt: currentTimestamp
-        };
-        
-        console.log("Adding equipment booking with data:", bookingData);
-        
-        // Add the booking to the bookings collection
-        const docRef = await addDoc(bookingsCollection, bookingData);
-        console.log("Successfully created booking with ID:", docRef.id);
-        
-        // Close dialog and reset form
-        handleCloseBookingDialog();
-        showAuthSuccessToast("Booking request submitted successfully. It will be reviewed by an administrator.");
-      } else {
-        // This should never happen if the UI is working correctly
-        console.error("Invalid booking type or missing selected item", { bookingType, selectedRoom, selectedEquipment });
-        showAuthErrorToast("Invalid booking details. Please try again.");
-        setIsSubmitting(false);
+        const resourceName = bookingType === 'room' ? selectedRoom?.name : selectedEquipment?.name;
+        setSuccessMessage(`Your ${bookingType} booking for ${resourceName} has been submitted successfully! It will be reviewed by an administrator.\n\nBooking ID: ${result.docRef.id}`);
+        setSuccessDialogOpen(true);
         return;
       }
+      
+      // If dedicated function fails, try one last direct approach
+      console.log("🔄 Trying one final direct approach to save booking...");
+      const finalAttemptRef = collection(db, 'bookings');
+      const finalDocRef = await addDoc(finalAttemptRef, bookingData);
+      
+      console.log("✅ Final approach succeeded! Booking ID:", finalDocRef.id);
+      handleCloseBookingDialog();
+      const resourceName = bookingType === 'room' ? selectedRoom?.name : selectedEquipment?.name;
+      setSuccessMessage(`Your ${bookingType} booking for ${resourceName} has been submitted successfully! It will be reviewed by an administrator.\n\nBooking ID: ${finalDocRef.id}`);
+      setSuccessDialogOpen(true);
     } catch (error: any) {
       // Enhanced error logging
       console.error("Error creating booking:", error);
       
-      // Get detailed error information
-      const errorMessage = error.message || "Unknown error";
-      const errorCode = error.code || "";
-      console.error("Error details:", { errorMessage, errorCode, error });
+      // Log complete error details
+      console.error("Complete error object:", JSON.stringify(error, null, 2));
       
       // Show more specific error message to user
-      if (errorCode.includes("permission-denied")) {
-        showAuthErrorToast("You don't have permission to make bookings. Please contact an administrator.");
-      } else {
-        showAuthErrorToast(`Error: ${errorMessage}. Please try again or contact support.`);
-      }
+      showAuthErrorToast(`Error: ${error.message || 'Unknown error'}. Please try again or contact support.`);
     } finally {
       setIsSubmitting(false);
     }
@@ -862,6 +918,7 @@ export default function DashboardPage() {
         </main>
       </div>
 
+      {/* Booking Dialog */}
       <Dialog open={bookingDialogOpen} onOpenChange={setBookingDialogOpen}>
         <DialogContent className="sm:max-w-[425px]">
           <DialogHeader>
@@ -901,6 +958,29 @@ export default function DashboardPage() {
           </form>
         </DialogContent>
       </Dialog>
+
+      {/* Success Dialog */}
+      <Dialog open={successDialogOpen} onOpenChange={setSuccessDialogOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle className="text-center text-green-600">Booking Successful!</DialogTitle>
+          </DialogHeader>
+          <div className="py-6 flex flex-col items-center space-y-4">
+            <div className="bg-green-100 p-4 rounded-full">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-12 w-12 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <p className="text-center text-gray-700">{successMessage}</p>
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setSuccessDialogOpen(false)} className="w-full bg-green-600 hover:bg-green-700 text-white">
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
+
